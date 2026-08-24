@@ -1,0 +1,27 @@
+idf_component_register(
+    SRCS
+        "sf_app_settings.c"
+        "sf_settings_wifi.c"
+        "sf_settings_bt.c"
+        "sf_settings_local.c"
+        "sf_settings_device.c"
+       
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        sf_sys
+        sf_config
+        sf_hal
+        sf_gui
+        lvgl
+        esp_lvgl_port
+        app_update
+        esp_https_ota
+        esp_hw_support
+        esp_timer
+        esp_wifi
+        esp_netif
+        spiffs
+        heap
+        esp_system
+)

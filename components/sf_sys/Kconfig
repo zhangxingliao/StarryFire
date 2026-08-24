@@ -1,0 +1,26 @@
+menu "System Services"
+
+    config SF_SYS_MAX_REGISTERED_APPS
+        int "Max registered App slots"
+        default 16
+        range 1 32
+        help
+            Maximum number of App entries in the static registration table.
+
+    config SF_SYS_MAX_PAUSED_APPS
+        int "Max paused (background) Apps"
+        default 2
+        range 0 8
+        help
+            How many Apps can stay in PAUSED state simultaneously.
+            Beyond this limit, the least-recently-used PAUSED App
+            is stopped (STOPPED → DESTROYED).
+
+    config SF_SYS_EVENT_SUBSCRIBERS_PER_EVENT
+        int "Max subscribers per Event ID"
+        default 8
+        range 1 16
+        help
+            How many callbacks can subscribe to the same Event ID.
+
+endmenu

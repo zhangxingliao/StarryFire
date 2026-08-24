@@ -1,0 +1,55 @@
+menu "HAL Drivers"
+    config SF_HAL_DISPLAY_ST7789
+        bool "ST7789 display driver"
+        default y
+        help
+            Enable ST7789 SPI LCD controller driver.
+
+    config SF_HAL_INPUT_TOUCH_CST328
+        bool "CST328 touch driver"
+        default n
+        help
+            Enable CST328 capacitive touch controller driver (I2C).
+
+    config SF_HAL_DISPLAY_WIDTH
+        int "Display horizontal resolution"
+        default 240
+        range 0 480
+        help
+            LCD panel width in pixels.
+
+    config SF_HAL_DISPLAY_HEIGHT
+        int "Display vertical resolution"
+        default 320
+        range 0 480
+        help
+            LCD panel height in pixels.
+
+    config SF_HAL_DISPLAY_CMD_BITS
+        int "Display SPI command phase bits"
+        default 8
+        range 4 16
+        help
+            SPI command phase width for the LCD panel interface.
+
+    config SF_HAL_DISPLAY_PARAM_BITS
+        int "Display SPI parameter phase bits"
+        default 8
+        range 4 16
+        help
+            SPI parameter phase width for the LCD panel interface.
+
+    config SF_HAL_DISPLAY_BL_ON_LEVEL
+        int "Backlight active level (0 = low, 1 = high)"
+        default 1
+        range 0 1
+        help
+            Level that turns the backlight on for this panel.
+
+    config SF_HAL_DISPLAY_PIXEL_CLOCK_HZ
+        int "Display SPI pixel clock (Hz)"
+        default 80000000
+        range 1000000 120000000
+        help
+            SPI clock frequency for LCD communication.
+endmenu

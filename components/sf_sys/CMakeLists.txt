@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "sf_sys_core.c"
+        "sf_event_bus.c"
+        "sf_intent_resolver.c"
+        "sf_app_manager.c"
+        "sf_wifi.c"
+        "sf_ntp.c"
+        "sf_notification.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        sf_config
+        esp_event
+    PRIV_REQUIRES
+        esp_timer
+        esp_wifi
+        esp_netif
+        nvs_flash
+)

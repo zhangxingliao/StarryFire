@@ -1,0 +1,22 @@
+# GUI shell layout (sf_gui's own config).
+# Rectangular screens use the Phone shell, round screens the Watch shell; mutually exclusive
+# (choice). Read at compile time by components/sf_gui/sf_gui_shell.c and its CMakeLists.txt.
+
+menu "GUI Shell"
+
+    choice
+        prompt "GUI shell layout"
+        default SF_GUI_SHELL_PHONE
+
+        config SF_GUI_SHELL_PHONE
+            bool "Phone shell (rectangular)"
+            help
+                Rectangular layout with top status bar and bottom nav bar.
+
+        config SF_GUI_SHELL_WATCH
+            bool "Watch shell (circular)"
+            help
+                Circular layout for round displays.
+    endchoice
+
+endmenu

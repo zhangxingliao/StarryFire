@@ -1,0 +1,154 @@
+# StarryFire board-level config (hidden: no menu, no prompt, invisible in menuconfig).
+# This board's directory is registered as an ESP-IDF component via EXTRA_COMPONENT_DIRS;
+# a file named Kconfig.projbuild inside a component is sourced at the top level of the
+# IDF root Kconfig. Unselected board directories are excluded by EXTRA_COMPONENT_EXCLUDE_DIRS
+# in the root CMakeLists.txt, so their Kconfig.projbuild is never merged in.
+# Pins / font sizes are board hardware facts and are not exposed as tunable options
+# IDF only applies sdkconfig.defaults values to VISIBLE symbols, so this board's values
+# are carried via hidden symbols + `default` here. Porting a board only requires changing
+# this file's `default` clauses and the board-level sdkconfig.defaults; driver enables
+# (SF_HAL_DISPLAY_ST7789 / SF_HAL_INPUT_TOUCH_CST328, visible sf_hal symbols) are assigned
+# in the board-level sdkconfig.defaults.
+
+# ---- Board pins ----
+config SF_PIN_LCD_MOSI
+    int
+    default 45
+
+config SF_PIN_LCD_MISO
+    int
+    default -1
+
+config SF_PIN_LCD_SCLK
+    int
+    default 40
+
+config SF_PIN_LCD_CS
+    int
+    default 42
+
+config SF_PIN_LCD_DC
+    int
+    default 41
+
+config SF_PIN_LCD_RST
+    int
+    default 39
+
+config SF_PIN_LCD_BL
+    int
+    default 5
+
+config SF_PIN_TOUCH_SDA
+    int
+    default 1
+
+config SF_PIN_TOUCH_SCL
+    int
+    default 3
+
+config SF_PIN_TOUCH_INT
+    int
+    default 4
+
+config SF_PIN_TOUCH_RST
+    int
+    default 2
+
+config SF_PIN_I2C0_SDA
+    int
+    default 11
+
+config SF_PIN_I2C0_SCL
+    int
+    default 10
+
+config SF_PIN_I2S_BCLK
+    int
+    default 48
+
+config SF_PIN_I2S_LRCK
+    int
+    default 38
+
+config SF_PIN_I2S_DIN
+    int
+    default 47
+
+config SF_PIN_SD_CLK
+    int
+    default 14
+
+config SF_PIN_SD_CMD
+    int
+    default 17
+
+config SF_PIN_SD_D0
+    int
+    default 16
+
+config SF_PIN_PWR_KEY
+    int
+    default 6
+
+config SF_PIN_PWR_CTRL
+    int
+    default 7
+
+config SF_PIN_BAT_ADC
+    int
+    default 8
+
+config SF_PIN_BTN_BACK
+    int
+    default 6
+
+config SF_PIN_BTN_HOME
+    int
+    default -1
+
+# ---- Board bus / port / channel ids (hardware facts: which SPI host the LCD sits on,
+# which I2C port the touch controller uses, which LEDC timer/channel drives the backlight
+# PWM). Values follow ESP-IDF peripheral enum numbering: SPI3_HOST = 2, SPI2_HOST = 1;
+# I2C_NUM_1 = 1, I2C_NUM_0 = 0. ----
+config SF_HAL_LCD_SPI_HOST
+    int
+    default 2
+
+config SF_HAL_LCD_BL_LEDC_TIMER
+    int
+    default 0
+
+config SF_HAL_LCD_BL_LEDC_CHANNEL
+    int
+    default 0
+
+config SF_HAL_TOUCH_I2C_PORT
+    int
+    default 1
+
+# ---- Board font sizes (one-to-one with the LV_FONT_MONTSERRAT_* glyph sets enabled
+# in the board-level sdkconfig.defaults) ----
+config SF_FONT_XS_SIZE
+    int
+    default 12
+
+config SF_FONT_SM_SIZE
+    int
+    default 14
+
+config SF_FONT_MD_SIZE
+    int
+    default 16
+
+config SF_FONT_LG_SIZE
+    int
+    default 20
+
+config SF_FONT_XL_SIZE
+    int
+    default 28
+
+config SF_FONT_XXL_SIZE
+    int
+    default 48

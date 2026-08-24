@@ -1,0 +1,23 @@
+# ---- ESP-IDF build artifacts ----
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+
+# ---- ESP-IDF component lockfile is tracked (regenerates managed_components) ----
+# dependencies.lock
+
+# ---- IDE / editor ----
+.vscode/
+.clangd
+compile_commands.json
+
+# ---- OS ----
+.DS_Store
+
+# ---- local junk / stray dirs ----
+https:
+tmp/
+
+# ---- project memory (local only) ----
+.workbuddy/

@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "main.c"
+    PRIV_REQUIRES
+        sf_hal
+        sf_sys
+        sf_config
+        sf_gui
+        settings
+        monitor
+        lvgl
+)

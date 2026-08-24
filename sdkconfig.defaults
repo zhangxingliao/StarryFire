@@ -1,0 +1,11 @@
+# StarryFire - StarryFire OS / App 软件层默认配置（与具体硬件无关）
+# 硬件能力（芯片 target、WiFi、屏幕、触摸、PSRAM、Flash、分区）见 boards/<name>/sdkconfig.defaults，
+# 通过 CMakeLists.txt 的 SDKCONFIG_DEFAULTS 与本文件合并（板级文件覆盖本文件）。
+# 本文件只保留软件/OS 身份配置 + IDF / 第三方组件的外部配置。
+
+# FreeRTOS runtime stats（用于性能监控 App 展示每任务 CPU 占用）
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
+
+# NTP（需 >= 2 以支持主备服务器）
+CONFIG_LWIP_SNTP_MAX_SERVERS=2

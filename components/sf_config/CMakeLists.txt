@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "sf_config.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        spiffs
+        json
+        esp_partition
+)

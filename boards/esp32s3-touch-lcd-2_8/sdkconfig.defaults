@@ -1,0 +1,70 @@
+# StarryFire - ESP32-S3 Touch LCD 2.8" board defaults (board-level hardware config,
+# complete hardware description of this board)
+# This file is merged with the root sdkconfig.defaults (board overrides root):
+# hardware capabilities all follow the board.
+# To port: copy this directory as a template, modify chip/RF/display/touch/PSRAM/Flash/pins/fonts.
+# Pins (SF_PIN_*) and font sizes (SF_FONT_*) are hidden symbols; their values live in the
+# `default` clauses of boards/<name>/Kconfig.projbuild (IDF only applies sdkconfig.defaults
+# values to VISIBLE symbols, so they don't go here).
+# This file holds: target chip + driver enables (visible symbols) + external component
+# config (LVGL fonts, PSRAM, Flash, partition table).
+
+# ---- Chip & RF ----
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+
+# ---- Board driver enables (visible symbols of sf_hal/Kconfig) ----
+CONFIG_SF_HAL_DISPLAY_ST7789=y
+CONFIG_SF_HAL_INPUT_TOUCH_CST328=y
+
+# ---- Display panel params (visible symbols of sf_hal/Kconfig; hardware facts, declared
+# ---- explicitly even when equal to the defaults) ----
+# Board rule: all visible sf_hal configs must be assigned at board level, so the board
+# reads as a complete hardware description and does not depend on upstream Kconfig
+# defaults coincidentally matching (changing panel/chip is then obvious at a glance).
+CONFIG_SF_HAL_DISPLAY_WIDTH=240
+CONFIG_SF_HAL_DISPLAY_HEIGHT=320
+CONFIG_SF_HAL_DISPLAY_CMD_BITS=8
+CONFIG_SF_HAL_DISPLAY_PARAM_BITS=8
+CONFIG_SF_HAL_DISPLAY_BL_ON_LEVEL=1
+CONFIG_SF_HAL_DISPLAY_PIXEL_CLOCK_HZ=80000000
+
+# ---- GUI shell layout (sf_gui/Kconfig choice, decided by screen shape: PHONE = rectangular) ----
+CONFIG_SF_GUI_SHELL_PHONE=y
+
+# LVGL fonts (tiers actually used by this board's UI; see SF_FONT_*_SIZE in
+# boards/<name>/Kconfig.projbuild)
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# External SPI RAM (PSRAM) - onboard 8MB, Octal (OPI) mode, 80MHz
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_MODE_OCT=y
+
+# LVGL memory: keep builtin allocator, place its LV_MEM pool in PSRAM.
+# lv_mem_core_builtin.c marks the builtin pool array with LV_ATTRIBUTE_LARGE_RAM_ARRAY;
+# sf_gui/CMakeLists.txt overrides that macro to __attribute__((section(".ext_ram.bss"))).
+# With the option below (y), IDF routes that section to PSRAM at link time, so LVGL's own
+# TLSF allocator runs directly on a static 256KB PSRAM array — no custom allocator
+# (heap_caps/malloc) involved, DRAM cost ~0. The pool is a static array (NOLOAD), so it is
+# NOT visible in runtime heap monitors; verify via the .map file / memory layout instead.
+# (Do NOT use CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY here: a NOINIT section is not
+# zero-initialized; the BSS route above is the safe one.)
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# LV_MEM pool size: 256KB (the default was 64KB). Pool lives in PSRAM, so DRAM cost stays ~0
+# while the larger size gives headroom for offscreen layers / large fonts / decoded images.
+CONFIG_LV_MEM_SIZE_KILOBYTES=256
+
+# Flash (16MB for ESP32-S3 N16R8)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Partitions (custom partition table: boards/<board>/partitions.csv, trimmed to this
+# board's Flash size)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/esp32s3-touch-lcd-2_8/partitions.csv"
