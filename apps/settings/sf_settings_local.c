@@ -282,7 +282,7 @@ lv_obj_t *sf_settings_local_create(lv_obj_t *parent, settings_ctx_t *ctx)
         char tmp[8];
         snprintf(tmp, sizeof(tmp), "%d%%", (i + 1) * BRIGHTNESS_STEP);
         strcat(bri_str, tmp);
-        if (cur_bri <= (i + 1) * BRIGHTNESS_STEP) bri_sel = i;
+        if (cur_bri >= (i + 1) * BRIGHTNESS_STEP) bri_sel = i;
     }
     lv_dropdown_set_options(priv->bright_dd, bri_str);
     lv_dropdown_set_selected(priv->bright_dd, bri_sel);
