@@ -62,4 +62,7 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # has not yet run).
 idf_build_set_property(EXTRA_COMPONENT_EXCLUDE_DIRS "${SF_EXCLUDED_BOARD_DIRS}")
 
-project(StarryFire)
+# Firmware version -> PROJECT_VER -> esp_app_desc.version, surfaced as
+# "Version" in Settings > Device Info. Bump it here when cutting a release;
+# a top-level version.txt (if ever added) would take priority over this value.
+project(StarryFire VERSION 1.0.0)
