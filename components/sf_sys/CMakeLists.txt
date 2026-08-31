@@ -17,4 +17,5 @@ idf_component_register(
         esp_wifi
         esp_netif
         nvs_flash
+        wpa_supplicant
 )

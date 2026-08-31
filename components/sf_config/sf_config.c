@@ -31,6 +31,9 @@ typedef struct {
     bool wifi_enabled;
     char wifi_ssid[33];
     char wifi_pass[65];
+    int  wifi_security;     /* sf_wifi_security_t; 0 = Open for legacy configs */
+    char wifi_identity[65];
+    char wifi_username[65];
     bool wifi_has_creds;
 
     /* NETWORKS > ethernet */
@@ -45,6 +48,9 @@ static config_data_t s_cfg = {
     .wifi_enabled   = false,
     .wifi_ssid      = {0},
     .wifi_pass      = {0},
+    .wifi_security  = 0,
+    .wifi_identity  = {0},
+    .wifi_username  = {0},
     .wifi_has_creds = false,
     .eth_enabled    = false,
 };
@@ -145,6 +151,18 @@ static void load_from_json(cJSON *root)
             cJSON *pass = cJSON_GetObjectItem(wifi, "pass");
             if (pass && cJSON_IsString(pass))
                 strncpy(s_cfg.wifi_pass, pass->valuestring, sizeof(s_cfg.wifi_pass) - 1);
+
+            cJSON *sec = cJSON_GetObjectItem(wifi, "security");
+            if (sec && cJSON_IsNumber(sec))
+                s_cfg.wifi_security = sec->valueint;
+
+            cJSON *idn = cJSON_GetObjectItem(wifi, "identity");
+            if (idn && cJSON_IsString(idn))
+                strncpy(s_cfg.wifi_identity, idn->valuestring, sizeof(s_cfg.wifi_identity) - 1);
+
+            cJSON *usr = cJSON_GetObjectItem(wifi, "username");
+            if (usr && cJSON_IsString(usr))
+                strncpy(s_cfg.wifi_username, usr->valuestring, sizeof(s_cfg.wifi_username) - 1);
         }
 
         /* ethernet */
@@ -231,6 +249,11 @@ esp_err_t sf_config_save(void)
     if (s_cfg.wifi_has_creds) {
         cJSON_AddStringToObject(wifi, "ssid", s_cfg.wifi_ssid);
         cJSON_AddStringToObject(wifi, "pass", s_cfg.wifi_pass);
+        cJSON_AddNumberToObject(wifi, "security", s_cfg.wifi_security);
+        if (s_cfg.wifi_identity[0])
+            cJSON_AddStringToObject(wifi, "identity", s_cfg.wifi_identity);
+        if (s_cfg.wifi_username[0])
+            cJSON_AddStringToObject(wifi, "username", s_cfg.wifi_username);
     }
     cJSON_AddItemToObject(networks, "wifi", wifi);
 
@@ -317,7 +340,13 @@ void sf_config_set_wifi_enabled(bool en) { s_cfg.wifi_enabled = en; }
 const char *sf_config_get_wifi_ssid(void) { return s_cfg.wifi_ssid; }
 const char *sf_config_get_wifi_pass(void) { return s_cfg.wifi_pass; }
 
-void sf_config_set_wifi_creds(const char *ssid, const char *pass)
+int sf_config_get_wifi_security(void) { return s_cfg.wifi_security; }
+const char *sf_config_get_wifi_identity(void) { return s_cfg.wifi_identity; }
+const char *sf_config_get_wifi_username(void) { return s_cfg.wifi_username; }
+
+void sf_config_set_wifi_creds_ex(const char *ssid, int security,
+                                 const char *pass, const char *identity,
+                                 const char *username)
 {
     if (!ssid) return;
     strncpy(s_cfg.wifi_ssid, ssid, sizeof(s_cfg.wifi_ssid) - 1);
@@ -329,14 +358,36 @@ void sf_config_set_wifi_creds(const char *ssid, const char *pass)
     } else {
         s_cfg.wifi_pass[0] = '\0';
     }
+    s_cfg.wifi_security = security;
+
+    if (identity) {
+        strncpy(s_cfg.wifi_identity, identity, sizeof(s_cfg.wifi_identity) - 1);
+        s_cfg.wifi_identity[sizeof(s_cfg.wifi_identity) - 1] = '\0';
+    } else {
+        s_cfg.wifi_identity[0] = '\0';
+    }
+    if (username) {
+        strncpy(s_cfg.wifi_username, username, sizeof(s_cfg.wifi_username) - 1);
+        s_cfg.wifi_username[sizeof(s_cfg.wifi_username) - 1] = '\0';
+    } else {
+        s_cfg.wifi_username[0] = '\0';
+    }
     s_cfg.wifi_has_creds = true;
     s_cfg.wifi_enabled = true;
+}
+
+void sf_config_set_wifi_creds(const char *ssid, const char *pass)
+{
+    sf_config_set_wifi_creds_ex(ssid, 0, pass, NULL, NULL);
 }
 
 void sf_config_clear_wifi_creds(void)
 {
     s_cfg.wifi_ssid[0] = '\0';
     s_cfg.wifi_pass[0] = '\0';
+    s_cfg.wifi_identity[0] = '\0';
+    s_cfg.wifi_username[0] = '\0';
+    s_cfg.wifi_security = 0;
     s_cfg.wifi_has_creds = false;
 }
 

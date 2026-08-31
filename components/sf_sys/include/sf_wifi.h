@@ -52,6 +52,28 @@ typedef struct {
     int count;
 } sf_wifi_scan_list_t;
 
+/* ── Wi-Fi security types ───────────────────────────── */
+
+typedef enum {
+    SF_WIFI_SEC_OPEN = 0,          /* open / no encryption */
+    SF_WIFI_SEC_WEP,
+    SF_WIFI_SEC_WPA_PSK,
+    SF_WIFI_SEC_WPA2_PSK,
+    SF_WIFI_SEC_WPA_WPA2_PSK,      /* accept WPA or WPA2 personal */
+    SF_WIFI_SEC_WPA3_PSK,
+    SF_WIFI_SEC_WPA2_ENTERPRISE,   /* 802.1X / WPA2-Enterprise (EAP) */
+    SF_WIFI_SEC_WPA3_ENTERPRISE,
+} sf_wifi_security_t;
+
+/* Connection parameters. `identity`/`username` are used only for Enterprise (EAP). */
+typedef struct {
+    const char *ssid;
+    sf_wifi_security_t security;
+    const char *pass;       /* PSK, or EAP password for Enterprise */
+    const char *identity;   /* EAP identity (Enterprise); NULL otherwise */
+    const char *username;   /* EAP username (Enterprise; optional) */
+} sf_wifi_connect_params_t;
+
 /* ── API ──────────────────────────────────────────── */
 
 /**
@@ -84,9 +106,17 @@ int8_t sf_wifi_get_rssi(void);
 
 /**
  * Connect to the specified network.
- * On success the credentials are saved to NVS and reused for auto-reconnect on boot.
+ * Credentials are persisted only after the connection succeeds (IP obtained), so a
+ * failed attempt never overwrites the previously saved credentials.
+ * @param params  connection parameters (ssid, security, pass, and EAP fields)
+ */
+esp_err_t sf_wifi_connect_ex(const sf_wifi_connect_params_t *params);
+
+/**
+ * Convenience wrapper for Open and WPA/WPA2-Personal networks.
+ * For Enterprise (EAP) or explicit security selection, use sf_wifi_connect_ex().
  * @param ssid  SSID
- * @param pass  password (empty string or NULL for an open network)
+ * @param pass  password (NULL/empty for Open; otherwise WPA/WPA2 personal)
  */
 esp_err_t sf_wifi_connect(const char *ssid, const char *pass);
 

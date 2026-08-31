@@ -78,7 +78,18 @@ void sf_config_set_wifi_enabled(bool en);
 const char *sf_config_get_wifi_ssid(void);
 const char *sf_config_get_wifi_pass(void);
 
-/** Save Wi-Fi credentials and mark enabled=true */
+/** Wi-Fi security type (sf_wifi_security_t). 0 = Open (legacy config default). */
+int  sf_config_get_wifi_security(void);
+/** EAP identity / username for Enterprise; empty string if none saved */
+const char *sf_config_get_wifi_identity(void);
+const char *sf_config_get_wifi_username(void);
+
+/** Save full Wi-Fi credentials (incl. security type and Enterprise EAP fields), mark enabled=true */
+void sf_config_set_wifi_creds_ex(const char *ssid, int security,
+                                 const char *pass, const char *identity,
+                                 const char *username);
+
+/** Save Wi-Fi credentials (ssid/pass) and mark enabled=true. Security defaults to Open. */
 void sf_config_set_wifi_creds(const char *ssid, const char *pass);
 
 /** Clear saved Wi-Fi credentials */
