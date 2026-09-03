@@ -6,6 +6,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 
 static const char *TAG = "sf_notif_center";
 
@@ -361,11 +362,22 @@ static void on_show_banner(void *unused)
 static void on_notification_event(esp_event_base_t base, int32_t id,
                                    void *data, void *ctx)
 {
+    /* This callback runs in whatever task published the notification event.
+     * For Wi-Fi/IP notifications that is `sys_evt`, NOT the LVGL task.
+     * lv_async_call() allocates from the LVGL heap and inserts into the LVGL
+     * timer list in the *caller's* context, so without serialization it races
+     * with taskLVGL's lv_timer_handler() and corrupts the lockless TLSF pool
+     * (LV_USE_OS is LV_OS_NONE here). Take esp_lvgl_port's mutex — the same
+     * one taskLVGL holds while running lv_timer_handler — to make the call safe.
+     * The deferred refresh_list/on_show_banner still runs later inside the LVGL
+     * task as intended. */
+    lvgl_port_lock(0);
     if (s_visible) {
         lv_async_call(refresh_list, NULL);
     } else {
         lv_async_call(on_show_banner, NULL);
     }
+    lvgl_port_unlock();
 }
 
 static void close_panel(void)
