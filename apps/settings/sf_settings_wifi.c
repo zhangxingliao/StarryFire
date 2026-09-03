@@ -10,6 +10,7 @@
 #include "sf_settings_pages.h"
 #include "sf_sys.h"
 #include "sf_wifi.h"
+#include "sf_config.h"
 #include <string.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -30,8 +31,9 @@ typedef struct {
     lv_obj_t *conn_sig_lbl;     /* signal icon of the connected network (color refreshed by timer) */
     lv_timer_t *rssi_timer;     /* 2s timer: refreshes the connected network's signal */
     lv_timer_t *refresh_timer;  /* ~100ms timer (LVGL thread): aggregates event-driven refresh requests */
+    lv_timer_t *scan_timer;     /* 10s timer: periodic background scan while the page is open */
     volatile bool refresh_pending;  /* set by wifi_event_cb on the event task, consumed by refresh_timer */
-    char pending_ssid[SF_WIFI_SSID_MAX_LEN];
+    lv_obj_t *pwd_page;        /* open password sheet (overlay on window); NULL when closed */
 } wifi_page_priv_t;
 
 typedef struct {
@@ -40,6 +42,11 @@ typedef struct {
     lv_obj_t *pwd_ta;
     lv_obj_t *kb;
     lv_obj_t *connect_btn;
+    lv_obj_t *sec_dd;          /* security type dropdown */
+    lv_obj_t *identity_ta;     /* EAP identity (enterprise only) */
+    lv_obj_t *username_ta;     /* EAP username (enterprise only) */
+    lv_obj_t *identity_row;    /* container toggled hidden for non-enterprise */
+    lv_obj_t *username_row;
     char ssid[SF_WIFI_SSID_MAX_LEN];
 } wifi_pwd_priv_t;
 
@@ -72,6 +79,105 @@ static void rssi_timer_cb(lv_timer_t *t)
 
     int8_t rssi = sf_wifi_get_rssi();
     lv_obj_set_style_text_color(priv->conn_sig_lbl, rssi_to_color(rssi), 0);
+}
+
+/* ── Periodic scan timer callback (runs inside the LVGL thread) ────────────
+ * Keeps the surrounding network list fresh: triggers a background scan every
+ * 10s while the page is open. Skips when Wi-Fi is off or a scan is already
+ * running (avoid re-entering esp_wifi_scan_start). */
+static void scan_timer_cb(lv_timer_t *t)
+{
+    wifi_page_priv_t *priv = lv_timer_get_user_data(t);
+    if (!priv) return;
+    if (!sf_wifi_is_enabled()) return;
+    if (sf_wifi_get_state() == SF_WIFI_STATE_SCANNING) return;
+    sf_wifi_start_scan();
+}
+
+/* ── Security selection helpers (for the password/EAP page) ── */
+
+static void ta_focus_cb(lv_event_t *e);  /* defined below; used by create_eap_row */
+
+/* Dropdown options; the selected index maps 1:1 to sf_wifi_security_t */
+static const char *k_sec_options =
+    "Open\nWEP\nWPA\nWPA2\nWPA/WPA2\nWPA3\nWPA2 Enterprise\nWPA3 Enterprise";
+
+static sf_wifi_security_t authmode_to_security(uint8_t authmode)
+{
+    switch (authmode) {
+    case WIFI_AUTH_WEP:             return SF_WIFI_SEC_WEP;
+    case WIFI_AUTH_WPA_PSK:         return SF_WIFI_SEC_WPA_PSK;
+    case WIFI_AUTH_WPA2_PSK:        return SF_WIFI_SEC_WPA2_PSK;
+    case WIFI_AUTH_WPA_WPA2_PSK:    return SF_WIFI_SEC_WPA_WPA2_PSK;
+    case WIFI_AUTH_WPA3_PSK:        return SF_WIFI_SEC_WPA3_PSK;
+    case WIFI_AUTH_WPA2_ENTERPRISE: return SF_WIFI_SEC_WPA2_ENTERPRISE;
+    case WIFI_AUTH_WPA3_ENTERPRISE: return SF_WIFI_SEC_WPA3_ENTERPRISE;
+    default:                        return SF_WIFI_SEC_WPA_WPA2_PSK;
+    }
+}
+
+static bool sec_is_enterprise(sf_wifi_security_t s)
+{
+    return s == SF_WIFI_SEC_WPA2_ENTERPRISE || s == SF_WIFI_SEC_WPA3_ENTERPRISE;
+}
+
+static void sec_dd_cb(lv_event_t *e)
+{
+    wifi_pwd_priv_t *ppriv = lv_event_get_user_data(e);
+    if (!ppriv) return;
+    bool ent = sec_is_enterprise((sf_wifi_security_t)lv_dropdown_get_selected(ppriv->sec_dd));
+    lvgl_port_lock(0);
+    if (ent) {
+        lv_obj_clear_flag(ppriv->identity_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ppriv->username_row, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ppriv->identity_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ppriv->username_row, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvgl_port_unlock();
+}
+
+/* Create a label + textarea row (used for EAP Identity / Username) */
+static lv_obj_t *create_eap_row(lv_obj_t *parent, const char *label_text,
+                                const char *placeholder, wifi_pwd_priv_t *ppriv,
+                                lv_obj_t **ta_out)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(row, 0, 0);
+
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, label_text);
+    lv_obj_add_style(lbl, sf_theme_get_style(SF_STYLE_TXT_MUTED), 0);
+    lv_obj_set_style_text_font(lbl, SF_FONT_SM, 0);
+    lv_obj_set_style_pad_left(lbl, SF_UI(16), 0);
+    lv_obj_set_style_pad_top(lbl, SF_UI(16), 0);
+    lv_obj_set_style_pad_bottom(lbl, SF_UI(4), 0);
+
+    lv_obj_t *ta = lv_textarea_create(row);
+    lv_obj_set_width(ta, LV_PCT(100));
+    lv_obj_set_height(ta, 40);
+    lv_obj_add_style(ta, sf_theme_get_style(SF_STYLE_BG_CARD), 0);
+    lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_add_style(ta, sf_theme_get_style(SF_STYLE_BORDER_ACTIVE), 0);
+    lv_obj_set_style_radius(ta, 8, 0);
+    lv_obj_set_style_pad_all(ta, 6, 0);
+    lv_obj_add_style(ta, sf_theme_get_style(SF_STYLE_TXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(ta, SF_FONT_SM, 0);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_textarea_set_max_length(ta, SF_WIFI_PASS_MAX_LEN - 1);
+    lv_obj_set_style_pad_left(ta, SF_UI(12), 0);
+    lv_obj_set_style_pad_right(ta, SF_UI(12), 0);
+    lv_obj_set_style_border_side(ta, LV_BORDER_SIDE_FULL, LV_STATE_FOCUSED);
+    lv_obj_add_event_cb(ta, ta_focus_cb, LV_EVENT_FOCUSED, ppriv);
+    lv_obj_add_event_cb(ta, ta_focus_cb, LV_EVENT_CLICKED, ppriv);
+
+    if (ta_out) *ta_out = ta;
+    return row;
 }
 
 /* ── Creating network list items ───────────────────────────────── */
@@ -117,18 +223,24 @@ static void create_network_item(lv_obj_t *parent, const sf_wifi_scan_result_t *r
     lv_obj_set_style_text_font(ssid_lbl, SF_FONT_SM, 0);
     lv_obj_set_flex_grow(ssid_lbl, 1);
 
-    /* Status indicator: connected / connecting / encrypted */
+    /* Status indicator: derive live from the connection state so it stays in
+     * sync with Wi-Fi events (no stale per-scan flags, no polling).
+     * - connected  : this item IS the current target and IP is up  -> checkmark
+     * - connecting : this item IS the current target but not yet up -> "..."
+     *                (covers CONNECTING and the DISCONNECTED-reconnect phase of a
+     *                 manual switch; the previous network is no longer the target,
+     *                 so it correctly shows nothing)
+     * - otherwise  : no marker (per request, "Secured" is not shown) */
+    const char *cur_ssid = sf_wifi_get_ssid();
     sf_wifi_state_t st = sf_wifi_get_state();
-    bool is_pending = (priv->pending_ssid[0] &&
-                       strcmp(priv->pending_ssid, r->ssid) == 0 &&
-                       (st == SF_WIFI_STATE_CONNECTING));
+    bool is_target = (cur_ssid[0] && strcmp(cur_ssid, r->ssid) == 0);
 
-    if (r->is_connected) {
+    if (is_target && st == SF_WIFI_STATE_CONNECTED) {
         lv_obj_t *check_lbl = lv_label_create(item);
         lv_label_set_text(check_lbl, LV_SYMBOL_OK);
         lv_obj_add_style(check_lbl, sf_theme_get_style(SF_STYLE_TXT_ACTIVE), 0);
-    } else if (is_pending) {
-        /* Connecting: show spinner text */
+    } else if (is_target && sf_wifi_is_connecting()) {
+        /* Attempting to connect to this network (first connect, switch, or drop) */
         lv_obj_t *conn_lbl = lv_label_create(item);
         lv_label_set_text(conn_lbl, "...");
         lv_obj_add_style(conn_lbl, sf_theme_get_style(SF_STYLE_TXT_ACTIVE), 0);
@@ -149,6 +261,7 @@ static void refresh_network_list(wifi_page_priv_t *priv)
     lv_obj_clean(priv->list_cont);
 
     sf_wifi_state_t st = sf_wifi_get_state();
+    const char *cur = sf_wifi_get_ssid();
 
     /* The refresh button's appearance changes with state */
     if (priv->spinner_lbl) {
@@ -177,10 +290,11 @@ static void refresh_network_list(wifi_page_priv_t *priv)
     if (scan.count == 0) {
         const char *cur_ssid = sf_wifi_get_ssid();
 
-        /* Show a synthetic entry for saved networks even while scanning/connecting */
+        /* Show a synthetic entry for the saved/connected network while connected,
+         * connecting, scanning, or reconnecting after a drop */
         if (cur_ssid && cur_ssid[0] &&
             (st == SF_WIFI_STATE_CONNECTED || st == SF_WIFI_STATE_CONNECTING ||
-             st == SF_WIFI_STATE_SCANNING)) {
+             st == SF_WIFI_STATE_SCANNING || st == SF_WIFI_STATE_DISCONNECTED)) {
             /* Build a synthetic result to show the saved/connected network */
             sf_wifi_scan_result_t synthetic;
             memset(&synthetic, 0, sizeof(synthetic));
@@ -203,6 +317,16 @@ static void refresh_network_list(wifi_page_priv_t *priv)
                 lv_obj_set_style_pad_top(scan_lbl, SF_UI(12), 0);
                 lv_obj_set_width(scan_lbl, LV_PCT(100));
                 lv_obj_set_style_text_align(scan_lbl, LV_TEXT_ALIGN_CENTER, 0);
+            } else if (sf_wifi_is_connecting()) {
+                /* Attempting to reach the current target: first connect, manual
+                   switch, or reconnect after a drop. */
+                const char *hint = sf_wifi_is_attempt_active() ? "Connecting..." : "Reconnecting...";
+                lv_obj_t *con_lbl = lv_label_create(priv->list_cont);
+                lv_label_set_text(con_lbl, hint);
+                lv_obj_add_style(con_lbl, sf_theme_get_style(SF_STYLE_TXT_MUTED), 0);
+                lv_obj_set_style_pad_top(con_lbl, SF_UI(12), 0);
+                lv_obj_set_width(con_lbl, LV_PCT(100));
+                lv_obj_set_style_text_align(con_lbl, LV_TEXT_ALIGN_CENTER, 0);
             }
         } else if (st == SF_WIFI_STATE_SCANNING) {
             lv_obj_t *lbl = lv_label_create(priv->list_cont);
@@ -243,7 +367,8 @@ static void refresh_network_list(wifi_page_priv_t *priv)
         for (int i = 0; i < saved_count; i++) {
             int idx = saved_indices[i];
             create_network_item(card, &scan.results[idx], priv, idx,
-                                scan.results[idx].is_connected ? &priv->conn_sig_lbl : NULL);
+                                (strcmp(scan.results[idx].ssid, cur) == 0 &&
+                                 st == SF_WIFI_STATE_CONNECTED) ? &priv->conn_sig_lbl : NULL);
 
             /* Separator between items */
             if (i < saved_count - 1) {
@@ -259,7 +384,8 @@ static void refresh_network_list(wifi_page_priv_t *priv)
         for (int i = 0; i < other_count; i++) {
             int idx = other_indices[i];
             create_network_item(card, &scan.results[idx], priv, idx,
-                                scan.results[idx].is_connected ? &priv->conn_sig_lbl : NULL);
+                                (strcmp(scan.results[idx].ssid, cur) == 0 &&
+                                 st == SF_WIFI_STATE_CONNECTED) ? &priv->conn_sig_lbl : NULL);
 
             /* Separator between items */
             if (i < other_count - 1) {
@@ -271,54 +397,73 @@ static void refresh_network_list(wifi_page_priv_t *priv)
 
 /* ── Password entry page ─────────────────────────────────── */
 
-static void pwd_back_cb(lv_event_t *e)
+/* Frees the password-sheet private struct when its page object is deleted.
+ * Covers both the Connect path and the app/system back path, so ppriv never
+ * leaks. */
+static void pwd_page_delete_cb(lv_event_t *e)
 {
     wifi_pwd_priv_t *ppriv = lv_event_get_user_data(e);
-    lvgl_port_lock(0);
-    if (ppriv->page) {
-        lv_obj_del(ppriv->page);
-        ppriv->page = NULL;
+    if (ppriv) {
+        if (ppriv->page_priv) ppriv->page_priv->pwd_page = NULL;
+        free(ppriv);
     }
-    lvgl_port_unlock();
-    free(ppriv);
+}
+
+/* Called by the app-level back handler. If the password sheet is open, close it
+ * and return true so the system back gesture dismisses the sheet and returns to
+ * the Wi-Fi list (instead of jumping straight to the home page). */
+bool sf_settings_wifi_dismiss_sheet(void)
+{
+    wifi_page_priv_t *priv = s_active_page;
+    if (priv && priv->pwd_page) {
+        lvgl_port_lock(0);
+        lv_obj_del(priv->pwd_page);   /* fires pwd_page_delete_cb -> clears pwd_page + frees ppriv */
+        lvgl_port_unlock();
+        return true;
+    }
+    return false;
 }
 
 static void pwd_connect_cb(lv_event_t *e)
 {
     wifi_pwd_priv_t *ppriv = lv_event_get_user_data(e);
     const char *pwd = lv_textarea_get_text(ppriv->pwd_ta);
+    sf_wifi_security_t sec = (sf_wifi_security_t)lv_dropdown_get_selected(ppriv->sec_dd);
 
-    ESP_LOGI(TAG, "connecting to '%s' with password", ppriv->ssid);
-    sf_wifi_connect(ppriv->ssid, pwd);
-
-    /* Record the SSID being connected to (used by the UI to show "connecting" state) */
-    if (ppriv->page_priv) {
-        strncpy(ppriv->page_priv->pending_ssid, ppriv->ssid,
-                sizeof(ppriv->page_priv->pending_ssid) - 1);
+    sf_wifi_connect_params_t p = {
+        .ssid = ppriv->ssid,
+        .security = sec,
+        .pass = pwd,
+        .identity = NULL,
+        .username = NULL,
+    };
+    if (sec_is_enterprise(sec)) {
+        p.identity = lv_textarea_get_text(ppriv->identity_ta);
+        p.username = lv_textarea_get_text(ppriv->username_ta);
     }
 
-    /* Return to the network list page */
+    ESP_LOGI(TAG, "connecting to '%s' (security=%d)", ppriv->ssid, sec);
+    sf_wifi_connect_ex(&p);
+
+    /* Return to the network list. Deleting the page triggers pwd_page_delete_cb
+     * (which frees ppriv), so clear the back-reference first and refresh via a
+     * saved pointer to avoid a use-after-free. */
+    wifi_page_priv_t *np = ppriv->page_priv;
     lvgl_port_lock(0);
-    if (ppriv->page) {
-        lv_obj_del(ppriv->page);
-        ppriv->page = NULL;
-    }
-    /* Refresh the list to show the connecting state */
-    if (ppriv->page_priv) {
-        refresh_network_list(ppriv->page_priv);
-    }
+    lv_obj_del(ppriv->page);
+    np->pwd_page = NULL;
+    refresh_network_list(np);
     lvgl_port_unlock();
-    free(ppriv);
 }
 
 static void ta_focus_cb(lv_event_t *e)
 {
     wifi_pwd_priv_t *ppriv = lv_event_get_user_data(e);
     if (!ppriv || !ppriv->kb) return;
-    lv_keyboard_set_textarea(ppriv->kb, ppriv->pwd_ta);
+    lv_keyboard_set_textarea(ppriv->kb, lv_event_get_target(e));
 }
 
-static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
+static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid, sf_wifi_security_t sec_hint)
 {
     wifi_pwd_priv_t *ppriv = calloc(1, sizeof(wifi_pwd_priv_t));
     if (!ppriv) return;
@@ -329,6 +474,8 @@ static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
 
     lv_obj_t *page = lv_obj_create(page_priv->ctx->window);
     ppriv->page = page;
+    page_priv->pwd_page = page;
+    lv_obj_add_event_cb(page, pwd_page_delete_cb, LV_EVENT_DELETE, ppriv);
     lv_obj_remove_style_all(page);
     lv_obj_set_width(page, LV_PCT(100));
     lv_obj_set_height(page, LV_PCT(100));
@@ -339,14 +486,47 @@ static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
     lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Header */
-    settings_create_page_header(page, ssid, pwd_back_cb, ppriv);
+    /* Scrollable form area: holds the header and all inputs; the keyboard and
+     * the Connect button live below it (on `page`), so the form can scroll to
+     * reach them instead of being clipped off-screen. */
+    lv_obj_t *form_cont = lv_obj_create(page);
+    lv_obj_remove_style_all(form_cont);
+    lv_obj_set_width(form_cont, LV_PCT(100));
+    lv_obj_set_flex_grow(form_cont, 1);
+    lv_obj_set_style_pad_top(form_cont, SF_UI(8), 0);
+    lv_obj_set_style_pad_left(form_cont, 0, 0);
+    lv_obj_set_style_pad_right(form_cont, 0, 0);
+    lv_obj_set_style_pad_bottom(form_cont, 0, 0);
+    lv_obj_set_scrollbar_mode(form_cont, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(form_cont, LV_DIR_VER);
+    lv_obj_set_flex_flow(form_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(form_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    /* Separator */
-    settings_create_separator(page);
+    /* Security type */
+    lv_obj_t *sec_lbl = lv_label_create(form_cont);
+    lv_label_set_text(sec_lbl, "Security");
+    lv_obj_add_style(sec_lbl, sf_theme_get_style(SF_STYLE_TXT_MUTED), 0);
+    lv_obj_set_style_text_font(sec_lbl, SF_FONT_SM, 0);
+    lv_obj_set_style_pad_left(sec_lbl, SF_UI(16), 0);
+    lv_obj_set_style_pad_top(sec_lbl, SF_UI(16), 0);
+    lv_obj_set_style_pad_bottom(sec_lbl, SF_UI(4), 0);
+
+    ppriv->sec_dd = lv_dropdown_create(form_cont);
+    lv_obj_set_width(ppriv->sec_dd, LV_PCT(100));
+    lv_dropdown_set_options(ppriv->sec_dd, k_sec_options);
+    lv_obj_add_style(ppriv->sec_dd, sf_theme_get_style(SF_STYLE_BG_CARD), 0);
+    lv_obj_set_style_bg_opa(ppriv->sec_dd, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ppriv->sec_dd, 1, 0);
+    lv_obj_add_style(ppriv->sec_dd, sf_theme_get_style(SF_STYLE_BORDER_ACTIVE), 0);
+    lv_obj_set_style_radius(ppriv->sec_dd, 8, 0);
+    lv_obj_set_style_pad_all(ppriv->sec_dd, 6, 0);
+    lv_obj_add_style(ppriv->sec_dd, sf_theme_get_style(SF_STYLE_TXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(ppriv->sec_dd, SF_FONT_SM, 0);
+    lv_dropdown_set_selected(ppriv->sec_dd, sec_hint);
+    lv_obj_add_event_cb(ppriv->sec_dd, sec_dd_cb, LV_EVENT_VALUE_CHANGED, ppriv);
 
     /* Password label */
-    lv_obj_t *lbl = lv_label_create(page);
+    lv_obj_t *lbl = lv_label_create(form_cont);
     lv_label_set_text(lbl, "Password");
     lv_obj_add_style(lbl, sf_theme_get_style(SF_STYLE_TXT_MUTED), 0);
     lv_obj_set_style_text_font(lbl, SF_FONT_SM, 0);
@@ -355,7 +535,7 @@ static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
     lv_obj_set_style_pad_bottom(lbl, SF_UI(4), 0);
 
     /* Password input field */
-    ppriv->pwd_ta = lv_textarea_create(page);
+    ppriv->pwd_ta = lv_textarea_create(form_cont);
     lv_obj_set_width(ppriv->pwd_ta, LV_PCT(100));
     lv_obj_set_height(ppriv->pwd_ta, 40);
     lv_obj_add_style(ppriv->pwd_ta, sf_theme_get_style(SF_STYLE_BG_CARD), 0);
@@ -375,6 +555,14 @@ static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
 
     lv_obj_add_event_cb(ppriv->pwd_ta, ta_focus_cb, LV_EVENT_FOCUSED, ppriv);
     lv_obj_add_event_cb(ppriv->pwd_ta, ta_focus_cb, LV_EVENT_CLICKED, ppriv);
+
+    /* Enterprise (EAP) fields - only relevant for WPA2/WPA3 Enterprise */
+    ppriv->identity_row = create_eap_row(form_cont, "Identity", "EAP identity...", ppriv, &ppriv->identity_ta);
+    ppriv->username_row = create_eap_row(form_cont, "Username", "EAP username...", ppriv, &ppriv->username_ta);
+    if (!sec_is_enterprise(sec_hint)) {
+        lv_obj_add_flag(ppriv->identity_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ppriv->username_row, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* Connect button */
     ppriv->connect_btn = lv_obj_create(page);
@@ -396,10 +584,13 @@ static void show_password_page(wifi_page_priv_t *page_priv, const char *ssid)
 
     lv_obj_add_event_cb(ppriv->connect_btn, pwd_connect_cb, LV_EVENT_CLICKED, ppriv);
 
-    /* Keyboard */
+    /* Keyboard: fixed height, pinned at the bottom of `page` (below the form
+     * and the Connect button). The form scrolls in the area above it. */
     ppriv->kb = lv_keyboard_create(page);
     lv_obj_add_style(ppriv->kb, sf_theme_get_style(SF_STYLE_BG_LAUNCHER), 0);
     lv_obj_set_style_bg_opa(ppriv->kb, LV_OPA_COVER, 0);
+    lv_obj_set_width(ppriv->kb, LV_PCT(100));
+    lv_obj_set_height(ppriv->kb, LV_PCT(42));
     lv_keyboard_set_textarea(ppriv->kb, ppriv->pwd_ta);
 
     lv_obj_move_foreground(page);
@@ -431,17 +622,23 @@ static void network_item_click_cb(lv_event_t *e)
     wifi_page_priv_t *priv = s_active_page;
     if (!priv) return;
 
-    strncpy(priv->pending_ssid, r->ssid, sizeof(priv->pending_ssid) - 1);
-
     if (r->authmode == 0) {
         /* Open network: connect directly */
         sf_wifi_connect(r->ssid, NULL);
         lvgl_port_lock(0);
         refresh_network_list(priv);
         lvgl_port_unlock();
+    } else if (sf_config_has_wifi_profile(r->ssid)) {
+        /* Encrypted but already configured: connect with stored credentials,
+           no need to re-enter the password. */
+        sf_wifi_connect_saved(r->ssid);
+        lvgl_port_lock(0);
+        refresh_network_list(priv);
+        lvgl_port_unlock();
     } else {
-        /* Encrypted network: bring up the password entry */
-        show_password_page(priv, r->ssid);
+        /* Encrypted and not yet configured: bring up the password entry
+           (preselect security from scan). */
+        show_password_page(priv, r->ssid, authmode_to_security(r->authmode));
     }
 }
 
@@ -459,9 +656,6 @@ static void toggle_cb(lv_event_t *e)
     if (checked) {
         /* Scan immediately after enabling */
         sf_wifi_start_scan();
-    } else {
-        /* Clear the pending SSID when disabling */
-        priv->pending_ssid[0] = '\0';
     }
     refresh_network_list(priv);
     lvgl_port_unlock();
@@ -480,14 +674,6 @@ static void refresh_cb(lv_event_t *e)
     lvgl_port_lock(0);
     refresh_network_list(priv);
     lvgl_port_unlock();
-}
-
-/* ── Back callback ─────────────────────────────────────── */
-
-static void wifi_back_cb(lv_event_t *e)
-{
-    settings_ctx_t *ctx = lv_event_get_user_data(e);
-    settings_show_main(ctx);
 }
 
 /* ── Page delete callback (resource cleanup) ─────────────────────── */
@@ -515,6 +701,20 @@ static void wifi_page_delete_cb(lv_event_t *e)
         priv->refresh_timer = NULL;
     }
 
+    /* Delete the periodic scan timer */
+    if (priv->scan_timer) {
+        lv_timer_del(priv->scan_timer);
+        priv->scan_timer = NULL;
+    }
+
+    /* Close any open password sheet. It lives on the window as a sibling of
+     * this page, so LVGL will not cascade-delete it automatically when this
+     * page is destroyed (e.g. via the system/app back). */
+    if (priv->pwd_page) {
+        lv_obj_del(priv->pwd_page);   /* fires pwd_page_delete_cb → frees ppriv */
+        priv->pwd_page = NULL;
+    }
+
     /* Clear the active page pointer */
     if (s_active_page == priv) {
         s_active_page = NULL;
@@ -531,11 +731,6 @@ static void wifi_event_cb(esp_event_base_t base, int32_t id, void *event_data, v
 {
     wifi_page_priv_t *priv = (wifi_page_priv_t *)user_data;
     if (!priv || priv != s_active_page || !priv->page) return;
-
-    /* Got IP → connected successfully, clear the pending entry */
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        priv->pending_ssid[0] = '\0';
-    }
 
     /* Do NOT touch LVGL here: this callback runs on the esp_event task.
      * Only mark the page dirty; refresh_timer (LVGL thread) performs the
@@ -574,12 +769,6 @@ lv_obj_t *sf_settings_wifi_create(lv_obj_t *parent, settings_ctx_t *ctx)
 
     lv_obj_t *page = settings_page_create(parent);
     priv->page = page;
-
-    /* Header */
-    settings_create_page_header(page, "Wi-Fi", wifi_back_cb, ctx);
-
-    /* Separator */
-    settings_create_separator(page);
 
     /* Toggle row */
     lv_obj_t *toggle_row = lv_obj_create(page);
@@ -660,12 +849,12 @@ lv_obj_t *sf_settings_wifi_create(lv_obj_t *parent, settings_ctx_t *ctx)
      * requests from wifi_event_cb (esp_event task) into periodic UI rebuilds */
     priv->refresh_timer = lv_timer_create(refresh_timer_cb, 100, priv);
 
-    /* Auto-scan if Wi-Fi is on but there are no scan results yet */
-    sf_wifi_scan_list_t scan;
-    if (sf_wifi_is_enabled() &&
-        sf_wifi_get_scan_results(&scan) == ESP_OK && scan.count == 0) {
+    /* Proactively scan once when the page opens so the list is fresh, then keep
+     * it updated with a 10s periodic background scan while the page stays open. */
+    if (sf_wifi_is_enabled() && sf_wifi_get_state() != SF_WIFI_STATE_SCANNING) {
         sf_wifi_start_scan();
     }
+    priv->scan_timer = lv_timer_create(scan_timer_cb, 10000, priv);
 
     lv_obj_set_user_data(page, priv);
 

@@ -86,11 +86,6 @@ typedef struct {
 
 /* ── Back callback ─────────────────────────────────────── */
 
-static void local_back_cb(lv_event_t *e)
-{
-    settings_ctx_t *ctx = lv_event_get_user_data(e);
-    settings_show_main(ctx);
-}
 
 /* ── Dropdown callbacks ────────────────────────────────── */
 
@@ -242,12 +237,6 @@ lv_obj_t *sf_settings_local_create(lv_obj_t *parent, settings_ctx_t *ctx)
 
     lv_obj_t *page = settings_page_create(parent);
     priv->page = page;
-
-    /* Header */
-    settings_create_page_header(page, "Local", local_back_cb, ctx);
-
-    /* Separator */
-    settings_create_separator(page);
 
     /* Scrollable content area */
     lv_obj_t *content = lv_obj_create(page);

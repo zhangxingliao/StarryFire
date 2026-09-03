@@ -107,11 +107,6 @@ static lv_obj_t *create_info_row(lv_obj_t *parent, const char *icon,
     return item;
 }
 
-static void back_click_cb(lv_event_t *e)
-{
-    settings_ctx_t *ctx = lv_event_get_user_data(e);
-    settings_show_main(ctx);
-}
 
 /* ── Uptime live-refresh timer (1s) ── */
 static void uptime_timer_cb(lv_timer_t *t)
@@ -189,12 +184,6 @@ lv_obj_t *sf_settings_device_create(lv_obj_t *parent, settings_ctx_t *ctx)
     lvgl_port_lock(0);
 
     lv_obj_t *page = settings_page_create(parent);
-
-    /* ── Header ── */
-    settings_create_page_header(page, "Device Info", back_click_cb, ctx);
-
-    /* ── Separator ── */
-    settings_create_separator(page);
 
     /* ── Scrollable content area (same as Local page) ── */
     lv_obj_t *content = lv_obj_create(page);

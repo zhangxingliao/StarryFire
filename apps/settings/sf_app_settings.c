@@ -16,43 +16,6 @@ typedef struct {
 
 /* ---- shared UI helpers ---- */
 
-lv_obj_t *settings_create_page_header(lv_obj_t *parent, const char *title,
-                                       lv_event_cb_t back_cb, void *user_data)
-{
-    lv_obj_t *header = lv_obj_create(parent);
-    lv_obj_remove_style_all(header);
-    lv_obj_set_width(header, LV_PCT(100));
-    lv_obj_set_height(header, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(header, 8, 0);
-    lv_obj_set_scrollbar_mode(header, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *back_btn = lv_obj_create(header);
-    lv_obj_remove_style_all(back_btn);
-    lv_obj_add_flag(back_btn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(back_btn, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(back_btn, SF_UI(36), SF_UI(36));
-    lv_obj_set_style_radius(back_btn, SF_UI(18), 0);
-    lv_obj_add_style(back_btn, sf_theme_get_style(SF_STYLE_BG_PRESSED), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(back_btn, LV_OPA_10, LV_STATE_PRESSED);
-
-    lv_obj_t *back_icon = lv_label_create(back_btn);
-    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
-    lv_obj_add_style(back_icon, sf_theme_get_style(SF_STYLE_TXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(back_icon, SF_FONT_SM, 0);
-    lv_obj_center(back_icon);
-
-    lv_obj_add_event_cb(back_btn, back_cb, LV_EVENT_CLICKED, user_data);
-
-    lv_obj_t *title_lbl = lv_label_create(header);
-    lv_label_set_text(title_lbl, title);
-    lv_obj_add_style(title_lbl, sf_theme_get_style(SF_STYLE_TXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(title_lbl, SF_FONT_LG, 0);
-
-    return header;
-}
 
 lv_obj_t *settings_create_separator(lv_obj_t *parent)
 {
@@ -114,6 +77,7 @@ lv_obj_t *settings_page_create(lv_obj_t *parent)
     lv_obj_add_style(page, sf_theme_get_style(SF_STYLE_BG_PAGE), 0);
     lv_obj_set_style_bg_opa(page, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(page, 0, 0);
+    lv_obj_set_style_pad_top(page, SF_UI(8), 0);   /* breathing room now that sub-pages have no top header */
     lv_obj_set_style_pad_row(page, 0, 0);          /* no gap between flex children — separators sit flush */
     lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(page, LV_DIR_VER);
@@ -316,6 +280,11 @@ static bool on_back(sf_app_ctx_t *ctx)
 {
     settings_priv_t *priv = ctx->user_data;
     if (priv && priv->pg.cur_page) {
+        /* If a transient sheet (e.g. the Wi-Fi password page) is open on the
+         * current sub-page, dismiss it and stay on that sub-page. */
+        if (sf_settings_wifi_dismiss_sheet()) {
+            return true;
+        }
         lvgl_port_lock(0);
         settings_show_main(&priv->pg);
         lvgl_port_unlock();
