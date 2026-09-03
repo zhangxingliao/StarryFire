@@ -591,45 +591,13 @@ bool sf_wifi_is_attempt_active(void)
     return s_attempt_active;
 }
 
-esp_err_t sf_wifi_connect(const char *ssid, const char *pass)
-{
-    sf_wifi_connect_params_t p = {
-        .ssid     = ssid,
-        .security = (pass && pass[0]) ? SF_WIFI_SEC_WPA_WPA2_PSK : SF_WIFI_SEC_OPEN,
-        .pass     = pass,
-        .identity = NULL,
-        .username = NULL,
-    };
-    return sf_wifi_connect_ex(&p);
-}
-
-esp_err_t sf_wifi_connect_ex(const sf_wifi_connect_params_t *params)
+esp_err_t sf_wifi_connect(const sf_wifi_connect_params_t *params)
 {
     if (!s_inited || !params || !params->ssid || !params->ssid[0])
         return ESP_ERR_INVALID_ARG;
 
     /* Manual connection attempt (no auto-advance to the next saved network). */
     start_connect(params, false);
-    return ESP_OK;
-}
-
-esp_err_t sf_wifi_connect_saved(const char *ssid)
-{
-    if (!s_inited || !ssid || !ssid[0])
-        return ESP_ERR_INVALID_ARG;
-    if (!sf_config_has_wifi_profile(ssid))
-        return ESP_ERR_NOT_FOUND;
-
-    /* Load the stored credentials into the in-memory target, then connect. */
-    load_target_from_profile(ssid);
-    sf_wifi_connect_params_t p = {
-        .ssid     = s_ssid,
-        .security = s_target_security,
-        .pass     = s_target_pass[0] ? s_target_pass : NULL,
-        .identity = s_target_identity[0] ? s_target_identity : NULL,
-        .username = s_target_username[0] ? s_target_username : NULL,
-    };
-    start_connect(&p, false);
     return ESP_OK;
 }
 

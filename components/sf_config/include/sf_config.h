@@ -94,6 +94,10 @@ int sf_config_get_wifi_profile_count(void);
 /** Get a saved profile by index (0..count-1). Returns NULL if out of range. Read-only. */
 const wifi_profile_t *sf_config_get_wifi_profile(int idx);
 
+/** Find a saved profile by SSID. Copies the match into `out` and returns true;
+ *  returns false (leaving `out` untouched) if no profile with that SSID exists. */
+bool sf_config_get_wifi_profile_by_ssid(const char *ssid, wifi_profile_t *out);
+
 /** Whether a saved profile with the given SSID exists */
 bool sf_config_has_wifi_profile(const char *ssid);
 

@@ -375,6 +375,18 @@ bool sf_config_has_wifi_profile(const char *ssid)
     return false;
 }
 
+bool sf_config_get_wifi_profile_by_ssid(const char *ssid, wifi_profile_t *out)
+{
+    if (!ssid || !out) return false;
+    for (int i = 0; i < s_cfg.wifi_profile_count; i++) {
+        if (strcmp(s_cfg.wifi_profiles[i].ssid, ssid) == 0) {
+            *out = s_cfg.wifi_profiles[i];
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Copy a profile's fields into the destination, bounding all strings. */
 static void copy_profile(wifi_profile_t *dst, const char *ssid, int security,
                          const char *pass, const char *identity, const char *username)

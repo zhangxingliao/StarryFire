@@ -120,23 +120,10 @@ bool sf_wifi_is_attempt_active(void);
  * Connect to the specified network.
  * Credentials are persisted only after the connection succeeds (IP obtained), so a
  * failed attempt never overwrites the previously saved credentials.
+ * Supports Open, WPA/WPA2-Personal and Enterprise (EAP) networks via `params`.
  * @param params  connection parameters (ssid, security, pass, and EAP fields)
  */
-esp_err_t sf_wifi_connect_ex(const sf_wifi_connect_params_t *params);
-
-/**
- * Connect to a network using its already-saved credentials (no password re-entry).
- * Returns ESP_ERR_NOT_FOUND if no profile is stored for `ssid`.
- */
-esp_err_t sf_wifi_connect_saved(const char *ssid);
-
-/**
- * Convenience wrapper for Open and WPA/WPA2-Personal networks.
- * For Enterprise (EAP) or explicit security selection, use sf_wifi_connect_ex().
- * @param ssid  SSID
- * @param pass  password (NULL/empty for Open; otherwise WPA/WPA2 personal)
- */
-esp_err_t sf_wifi_connect(const char *ssid, const char *pass);
+esp_err_t sf_wifi_connect(const sf_wifi_connect_params_t *params);
 
 /** Disconnect from the current connection (keeps NVS credentials) */
 esp_err_t sf_wifi_disconnect(void);

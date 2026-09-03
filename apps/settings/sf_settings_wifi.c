@@ -443,7 +443,7 @@ static void pwd_connect_cb(lv_event_t *e)
     }
 
     ESP_LOGI(TAG, "connecting to '%s' (security=%d)", ppriv->ssid, sec);
-    sf_wifi_connect_ex(&p);
+    sf_wifi_connect(&p);
 
     /* Return to the network list. Deleting the page triggers pwd_page_delete_cb
      * (which frees ppriv), so clear the back-reference first and refresh via a
@@ -622,16 +622,29 @@ static void network_item_click_cb(lv_event_t *e)
     wifi_page_priv_t *priv = s_active_page;
     if (!priv) return;
 
+    wifi_profile_t pr;
     if (r->authmode == 0) {
         /* Open network: connect directly */
-        sf_wifi_connect(r->ssid, NULL);
+        sf_wifi_connect_params_t p = {
+            .ssid = r->ssid,
+            .security = SF_WIFI_SEC_OPEN,
+            .pass = NULL,
+        };
+        sf_wifi_connect(&p);
         lvgl_port_lock(0);
         refresh_network_list(priv);
         lvgl_port_unlock();
-    } else if (sf_config_has_wifi_profile(r->ssid)) {
+    } else if (sf_config_get_wifi_profile_by_ssid(r->ssid, &pr)) {
         /* Encrypted but already configured: connect with stored credentials,
            no need to re-enter the password. */
-        sf_wifi_connect_saved(r->ssid);
+        sf_wifi_connect_params_t p = {
+            .ssid     = pr.ssid,
+            .security = (sf_wifi_security_t)pr.security,
+            .pass     = pr.pass[0] ? pr.pass : NULL,
+            .identity = pr.identity[0] ? pr.identity : NULL,
+            .username = pr.username[0] ? pr.username : NULL,
+        };
+        sf_wifi_connect(&p);
         lvgl_port_lock(0);
         refresh_network_list(priv);
         lvgl_port_unlock();
