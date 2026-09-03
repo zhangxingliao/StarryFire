@@ -104,6 +104,18 @@ const char *sf_wifi_get_ip_str(void);
 /** Get the RSSI of the current connection (0 if not connected) */
 int8_t sf_wifi_get_rssi(void);
 
+/** True while a connection attempt to the current target is in progress
+ *  (Wi-Fi enabled, a target SSID is set, but no IP obtained yet). Covers the
+ *  CONNECTING phase and the DISCONNECTED-reconnect phase during a manual switch,
+ *  so the UI can show a live "connecting" indicator without polling. */
+bool sf_wifi_is_connecting(void);
+
+/** True while a first-connect attempt (manual switch or auto-pick) is armed
+ *  with the 15s timeout watchdog. Lets the UI distinguish an active switch /
+ *  first-connect ("Connecting...") from a passive reconnect-after-drop
+ *  ("Reconnecting..."). */
+bool sf_wifi_is_attempt_active(void);
+
 /**
  * Connect to the specified network.
  * Credentials are persisted only after the connection succeeds (IP obtained), so a
@@ -111,6 +123,12 @@ int8_t sf_wifi_get_rssi(void);
  * @param params  connection parameters (ssid, security, pass, and EAP fields)
  */
 esp_err_t sf_wifi_connect_ex(const sf_wifi_connect_params_t *params);
+
+/**
+ * Connect to a network using its already-saved credentials (no password re-entry).
+ * Returns ESP_ERR_NOT_FOUND if no profile is stored for `ssid`.
+ */
+esp_err_t sf_wifi_connect_saved(const char *ssid);
 
 /**
  * Convenience wrapper for Open and WPA/WPA2-Personal networks.

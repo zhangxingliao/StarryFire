@@ -29,12 +29,8 @@ typedef struct {
 
     /* NETWORKS > wifi */
     bool wifi_enabled;
-    char wifi_ssid[33];
-    char wifi_pass[65];
-    int  wifi_security;     /* sf_wifi_security_t; 0 = Open for legacy configs */
-    char wifi_identity[65];
-    char wifi_username[65];
-    bool wifi_has_creds;
+    wifi_profile_t wifi_profiles[SF_WIFI_MAX_PROFILES];
+    int  wifi_profile_count;
 
     /* NETWORKS > ethernet */
     bool eth_enabled;
@@ -46,12 +42,7 @@ static config_data_t s_cfg = {
     .timezone       = "CST-8",
     .screen_timeout = 30,
     .wifi_enabled   = false,
-    .wifi_ssid      = {0},
-    .wifi_pass      = {0},
-    .wifi_security  = 0,
-    .wifi_identity  = {0},
-    .wifi_username  = {0},
-    .wifi_has_creds = false,
+    .wifi_profile_count = 0,
     .eth_enabled    = false,
 };
 
@@ -142,27 +133,52 @@ static void load_from_json(cJSON *root)
             if (en && cJSON_IsBool(en))
                 s_cfg.wifi_enabled = cJSON_IsTrue(en);
 
-            cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid");
-            if (ssid && cJSON_IsString(ssid)) {
-                strncpy(s_cfg.wifi_ssid, ssid->valuestring, sizeof(s_cfg.wifi_ssid) - 1);
-                s_cfg.wifi_has_creds = true;
+            /* New format: an array of profiles */
+            cJSON *profiles = cJSON_GetObjectItem(wifi, "profiles");
+            if (cJSON_IsArray(profiles)) {
+                int n = cJSON_GetArraySize(profiles);
+                for (int i = 0; i < n && s_cfg.wifi_profile_count < SF_WIFI_MAX_PROFILES; i++) {
+                    cJSON *p = cJSON_GetArrayItem(profiles, i);
+                    if (!p) continue;
+                    cJSON *ssid = cJSON_GetObjectItem(p, "ssid");
+                    if (!ssid || !cJSON_IsString(ssid) || !ssid->valuestring[0]) continue;
+                    wifi_profile_t *dst = &s_cfg.wifi_profiles[s_cfg.wifi_profile_count];
+                    strncpy(dst->ssid, ssid->valuestring, sizeof(dst->ssid) - 1);
+                    cJSON *pass = cJSON_GetObjectItem(p, "pass");
+                    if (pass && cJSON_IsString(pass))
+                        strncpy(dst->pass, pass->valuestring, sizeof(dst->pass) - 1);
+                    cJSON *sec = cJSON_GetObjectItem(p, "security");
+                    if (sec && cJSON_IsNumber(sec))
+                        dst->security = sec->valueint;
+                    cJSON *idn = cJSON_GetObjectItem(p, "identity");
+                    if (idn && cJSON_IsString(idn))
+                        strncpy(dst->identity, idn->valuestring, sizeof(dst->identity) - 1);
+                    cJSON *usr = cJSON_GetObjectItem(p, "username");
+                    if (usr && cJSON_IsString(usr))
+                        strncpy(dst->username, usr->valuestring, sizeof(dst->username) - 1);
+                    s_cfg.wifi_profile_count++;
+                }
+            } else {
+                /* Legacy format: a single ssid/pass credential */
+                cJSON *ssid = cJSON_GetObjectItem(wifi, "ssid");
+                if (ssid && cJSON_IsString(ssid) && ssid->valuestring[0]) {
+                    wifi_profile_t *dst = &s_cfg.wifi_profiles[0];
+                    strncpy(dst->ssid, ssid->valuestring, sizeof(dst->ssid) - 1);
+                    cJSON *pass = cJSON_GetObjectItem(wifi, "pass");
+                    if (pass && cJSON_IsString(pass))
+                        strncpy(dst->pass, pass->valuestring, sizeof(dst->pass) - 1);
+                    cJSON *sec = cJSON_GetObjectItem(wifi, "security");
+                    if (sec && cJSON_IsNumber(sec))
+                        dst->security = sec->valueint;
+                    cJSON *idn = cJSON_GetObjectItem(wifi, "identity");
+                    if (idn && cJSON_IsString(idn))
+                        strncpy(dst->identity, idn->valuestring, sizeof(dst->identity) - 1);
+                    cJSON *usr = cJSON_GetObjectItem(wifi, "username");
+                    if (usr && cJSON_IsString(usr))
+                        strncpy(dst->username, usr->valuestring, sizeof(dst->username) - 1);
+                    s_cfg.wifi_profile_count = 1;
+                }
             }
-
-            cJSON *pass = cJSON_GetObjectItem(wifi, "pass");
-            if (pass && cJSON_IsString(pass))
-                strncpy(s_cfg.wifi_pass, pass->valuestring, sizeof(s_cfg.wifi_pass) - 1);
-
-            cJSON *sec = cJSON_GetObjectItem(wifi, "security");
-            if (sec && cJSON_IsNumber(sec))
-                s_cfg.wifi_security = sec->valueint;
-
-            cJSON *idn = cJSON_GetObjectItem(wifi, "identity");
-            if (idn && cJSON_IsString(idn))
-                strncpy(s_cfg.wifi_identity, idn->valuestring, sizeof(s_cfg.wifi_identity) - 1);
-
-            cJSON *usr = cJSON_GetObjectItem(wifi, "username");
-            if (usr && cJSON_IsString(usr))
-                strncpy(s_cfg.wifi_username, usr->valuestring, sizeof(s_cfg.wifi_username) - 1);
         }
 
         /* ethernet */
@@ -211,9 +227,8 @@ static esp_err_t load_config(void)
     load_from_json(root);
     cJSON_Delete(root);
 
-    ESP_LOGI(TAG, "Config loaded: brightness=%d tz=%s wifi=%s",
-             s_cfg.brightness, s_cfg.timezone,
-             s_cfg.wifi_has_creds ? s_cfg.wifi_ssid : "(none)");
+    ESP_LOGI(TAG, "Config loaded: brightness=%d tz=%s wifi_profiles=%d",
+             s_cfg.brightness, s_cfg.timezone, s_cfg.wifi_profile_count);
     return ESP_OK;
 }
 
@@ -246,15 +261,20 @@ esp_err_t sf_config_save(void)
 
     cJSON *wifi = cJSON_CreateObject();
     cJSON_AddBoolToObject(wifi, "enabled", s_cfg.wifi_enabled);
-    if (s_cfg.wifi_has_creds) {
-        cJSON_AddStringToObject(wifi, "ssid", s_cfg.wifi_ssid);
-        cJSON_AddStringToObject(wifi, "pass", s_cfg.wifi_pass);
-        cJSON_AddNumberToObject(wifi, "security", s_cfg.wifi_security);
-        if (s_cfg.wifi_identity[0])
-            cJSON_AddStringToObject(wifi, "identity", s_cfg.wifi_identity);
-        if (s_cfg.wifi_username[0])
-            cJSON_AddStringToObject(wifi, "username", s_cfg.wifi_username);
+    cJSON *profiles = cJSON_CreateArray();
+    for (int i = 0; i < s_cfg.wifi_profile_count; i++) {
+        wifi_profile_t *p = &s_cfg.wifi_profiles[i];
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "ssid", p->ssid);
+        cJSON_AddStringToObject(obj, "pass", p->pass);
+        cJSON_AddNumberToObject(obj, "security", p->security);
+        if (p->identity[0])
+            cJSON_AddStringToObject(obj, "identity", p->identity);
+        if (p->username[0])
+            cJSON_AddStringToObject(obj, "username", p->username);
+        cJSON_AddItemToArray(profiles, obj);
     }
+    cJSON_AddItemToObject(wifi, "profiles", profiles);
     cJSON_AddItemToObject(networks, "wifi", wifi);
 
     cJSON *eth = cJSON_CreateObject();
@@ -337,61 +357,78 @@ bool sf_config_get_wifi_enabled(void) { return s_cfg.wifi_enabled; }
 
 void sf_config_set_wifi_enabled(bool en) { s_cfg.wifi_enabled = en; }
 
-const char *sf_config_get_wifi_ssid(void) { return s_cfg.wifi_ssid; }
-const char *sf_config_get_wifi_pass(void) { return s_cfg.wifi_pass; }
+int sf_config_get_wifi_profile_count(void) { return s_cfg.wifi_profile_count; }
 
-int sf_config_get_wifi_security(void) { return s_cfg.wifi_security; }
-const char *sf_config_get_wifi_identity(void) { return s_cfg.wifi_identity; }
-const char *sf_config_get_wifi_username(void) { return s_cfg.wifi_username; }
-
-void sf_config_set_wifi_creds_ex(const char *ssid, int security,
-                                 const char *pass, const char *identity,
-                                 const char *username)
+const wifi_profile_t *sf_config_get_wifi_profile(int idx)
 {
-    if (!ssid) return;
-    strncpy(s_cfg.wifi_ssid, ssid, sizeof(s_cfg.wifi_ssid) - 1);
-    s_cfg.wifi_ssid[sizeof(s_cfg.wifi_ssid) - 1] = '\0';
-
-    if (pass) {
-        strncpy(s_cfg.wifi_pass, pass, sizeof(s_cfg.wifi_pass) - 1);
-        s_cfg.wifi_pass[sizeof(s_cfg.wifi_pass) - 1] = '\0';
-    } else {
-        s_cfg.wifi_pass[0] = '\0';
-    }
-    s_cfg.wifi_security = security;
-
-    if (identity) {
-        strncpy(s_cfg.wifi_identity, identity, sizeof(s_cfg.wifi_identity) - 1);
-        s_cfg.wifi_identity[sizeof(s_cfg.wifi_identity) - 1] = '\0';
-    } else {
-        s_cfg.wifi_identity[0] = '\0';
-    }
-    if (username) {
-        strncpy(s_cfg.wifi_username, username, sizeof(s_cfg.wifi_username) - 1);
-        s_cfg.wifi_username[sizeof(s_cfg.wifi_username) - 1] = '\0';
-    } else {
-        s_cfg.wifi_username[0] = '\0';
-    }
-    s_cfg.wifi_has_creds = true;
-    s_cfg.wifi_enabled = true;
+    if (idx < 0 || idx >= s_cfg.wifi_profile_count) return NULL;
+    return &s_cfg.wifi_profiles[idx];
 }
 
-void sf_config_set_wifi_creds(const char *ssid, const char *pass)
+bool sf_config_has_wifi_profile(const char *ssid)
 {
-    sf_config_set_wifi_creds_ex(ssid, 0, pass, NULL, NULL);
+    if (!ssid) return false;
+    for (int i = 0; i < s_cfg.wifi_profile_count; i++) {
+        if (strcmp(s_cfg.wifi_profiles[i].ssid, ssid) == 0)
+            return true;
+    }
+    return false;
 }
 
-void sf_config_clear_wifi_creds(void)
+/* Copy a profile's fields into the destination, bounding all strings. */
+static void copy_profile(wifi_profile_t *dst, const char *ssid, int security,
+                         const char *pass, const char *identity, const char *username)
 {
-    s_cfg.wifi_ssid[0] = '\0';
-    s_cfg.wifi_pass[0] = '\0';
-    s_cfg.wifi_identity[0] = '\0';
-    s_cfg.wifi_username[0] = '\0';
-    s_cfg.wifi_security = 0;
-    s_cfg.wifi_has_creds = false;
+    strncpy(dst->ssid, ssid, sizeof(dst->ssid) - 1);
+    dst->ssid[sizeof(dst->ssid) - 1] = '\0';
+    strncpy(dst->pass, pass ? pass : "", sizeof(dst->pass) - 1);
+    dst->pass[sizeof(dst->pass) - 1] = '\0';
+    dst->security = security;
+    strncpy(dst->identity, identity ? identity : "", sizeof(dst->identity) - 1);
+    dst->identity[sizeof(dst->identity) - 1] = '\0';
+    strncpy(dst->username, username ? username : "", sizeof(dst->username) - 1);
+    dst->username[sizeof(dst->username) - 1] = '\0';
 }
 
-bool sf_config_has_wifi_creds(void) { return s_cfg.wifi_has_creds; }
+bool sf_config_add_wifi_profile(const char *ssid, int security,
+                                const char *pass, const char *identity,
+                                const char *username)
+{
+    if (!ssid || !ssid[0]) return false;
+
+    /* Update in place if the SSID already exists */
+    for (int i = 0; i < s_cfg.wifi_profile_count; i++) {
+        if (strcmp(s_cfg.wifi_profiles[i].ssid, ssid) == 0) {
+            copy_profile(&s_cfg.wifi_profiles[i], ssid, security, pass, identity, username);
+            return true;
+        }
+    }
+
+    /* New SSID: append, evicting the oldest (index 0) when full */
+    if (s_cfg.wifi_profile_count >= SF_WIFI_MAX_PROFILES) {
+        for (int i = 1; i < SF_WIFI_MAX_PROFILES; i++)
+            s_cfg.wifi_profiles[i - 1] = s_cfg.wifi_profiles[i];
+        s_cfg.wifi_profile_count = SF_WIFI_MAX_PROFILES - 1;
+    }
+    copy_profile(&s_cfg.wifi_profiles[s_cfg.wifi_profile_count], ssid, security, pass, identity, username);
+    s_cfg.wifi_profile_count++;
+    return true;
+}
+
+bool sf_config_remove_wifi_profile(const char *ssid)
+{
+    if (!ssid) return false;
+    for (int i = 0; i < s_cfg.wifi_profile_count; i++) {
+        if (strcmp(s_cfg.wifi_profiles[i].ssid, ssid) == 0) {
+            for (int j = i; j < s_cfg.wifi_profile_count - 1; j++)
+                s_cfg.wifi_profiles[j] = s_cfg.wifi_profiles[j + 1];
+            s_cfg.wifi_profile_count--;
+            s_cfg.wifi_profiles[s_cfg.wifi_profile_count].ssid[0] = '\0';
+            return true;
+        }
+    }
+    return false;
+}
 
 /* ── NETWORKS > Ethernet getters/setters ───────────── */
 

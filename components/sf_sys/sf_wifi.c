@@ -12,6 +12,7 @@
 #include "esp_wifi.h"
 #include "esp_eap_client.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -44,6 +45,17 @@ static char s_target_pass[SF_WIFI_PASS_MAX_LEN] = {0};
 static sf_wifi_security_t s_target_security = SF_WIFI_SEC_OPEN;
 static char s_target_identity[SF_WIFI_PASS_MAX_LEN] = {0};
 static char s_target_username[SF_WIFI_PASS_MAX_LEN] = {0};
+
+/* A first connect to a network that does not reach GOT_IP within this window is
+   treated as failed: a manual attempt reverts to the previous network, an auto
+   attempt (boot/enable) advances to the next best saved network. */
+#define WIFI_CONNECT_ATTEMPT_TIMEOUT_US (15 * 1000 * 1000)
+
+static bool s_auto_pick = false;        /* boot/enable: auto-select the best saved network */
+static bool s_attempt_active = false;   /* a first-connect attempt is in progress (has a timeout) */
+static int64_t s_attempt_deadline = 0;  /* esp_timer_get_time() deadline for the current attempt */
+static char s_prev_ssid[SF_WIFI_SSID_MAX_LEN] = {0};  /* network we were on before a manual switch */
+static esp_timer_handle_t s_attempt_timer = NULL;
 
 /* ── Internal helpers ─────────────────────────────────── */
 
@@ -130,6 +142,82 @@ static esp_err_t ensure_started(void)
     esp_err_t err = esp_wifi_start();
     if (err == ESP_OK) s_enabled = true;
     return err;
+}
+
+/* Forward declaration (defined near sf_wifi_init) */
+static void attempt_timer_cb(void *arg);
+
+/* Load a saved profile's credentials into the in-memory target (for revert). */
+static void load_target_from_profile(const char *ssid)
+{
+    for (int i = 0; i < sf_config_get_wifi_profile_count(); i++) {
+        const wifi_profile_t *pr = sf_config_get_wifi_profile(i);
+        if (pr && strcmp(pr->ssid, ssid) == 0) {
+            sf_wifi_connect_params_t cp = {
+                .ssid     = pr->ssid,
+                .security = (sf_wifi_security_t)pr->security,
+                .pass     = pr->pass[0] ? pr->pass : NULL,
+                .identity = pr->identity[0] ? pr->identity : NULL,
+                .username = pr->username[0] ? pr->username : NULL,
+            };
+            store_target(&cp);
+            return;
+        }
+    }
+}
+
+/* Begin connecting to a network. Forces an AP switch when already connected (by
+   disconnecting first; the DISCONNECTED handler reconnects to the new target).
+   Arms the attempt-timeout watchdog unless auto_pick is driving a fallback chain. */
+static void start_connect(const sf_wifi_connect_params_t *p, bool auto_pick)
+{
+    bool is_switch = s_enabled && (s_cur_ip[0] != '\0');
+    if (is_switch) {
+        strncpy(s_prev_ssid, s_ssid, sizeof(s_prev_ssid) - 1);
+        s_prev_ssid[sizeof(s_prev_ssid) - 1] = '\0';
+    } else {
+        s_prev_ssid[0] = '\0';
+    }
+
+    store_target(p);
+    set_state(SF_WIFI_STATE_CONNECTING);
+    s_attempt_active = true;
+    s_attempt_deadline = esp_timer_get_time() + WIFI_CONNECT_ATTEMPT_TIMEOUT_US;
+    s_auto_pick = auto_pick;
+
+    bool was_enabled = s_enabled;
+    apply_sta_config();
+    if (!was_enabled) {
+        ESP_ERROR_CHECK(ensure_started());
+    } else {
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+    }
+    ESP_LOGI(TAG, "connecting to '%s'...", p->ssid);
+}
+
+/* Among saved profiles that are present in the latest scan, return the index of
+   the one with the strongest RSSI (excluding `exclude`). Returns -1 if none. */
+static int pick_best_saved_excluding(const char *exclude)
+{
+    int best = -1;
+    int8_t best_rssi = -128;
+    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_scan_list.count; i++) {
+        const char *ssid = s_scan_list.results[i].ssid;
+        if (!ssid[0]) continue;
+        if (exclude && strcmp(ssid, exclude) == 0) continue;
+        if (!sf_config_has_wifi_profile(ssid)) continue;
+        if (s_scan_list.results[i].rssi > best_rssi) {
+            best_rssi = s_scan_list.results[i].rssi;
+            for (int p = 0; p < sf_config_get_wifi_profile_count(); p++) {
+                const wifi_profile_t *pr = sf_config_get_wifi_profile(p);
+                if (pr && strcmp(pr->ssid, ssid) == 0) { best = p; break; }
+            }
+        }
+    }
+    xSemaphoreGive(s_scan_mutex);
+    return best;
 }
 
 /* ── Wi-Fi event callbacks ─────────────────────────── */
@@ -237,8 +325,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                     (strcmp(s_scan_list.results[idx].ssid, s_ssid) == 0 &&
                      s_cur_ip[0] != '\0');
                 s_scan_list.results[idx].is_saved =
-                    (s_ssid[0] &&
-                     strcmp(s_scan_list.results[idx].ssid, s_ssid) == 0);
+                    (sf_config_has_wifi_profile(s_scan_list.results[idx].ssid) ||
+                     (s_attempt_active &&
+                      strcmp(s_scan_list.results[idx].ssid, s_ssid) == 0));
                 idx++;
             }
             s_scan_list.count = idx;
@@ -254,6 +343,25 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                     set_state(SF_WIFI_STATE_CONNECTING);
                 } else {
                     set_state(SF_WIFI_STATE_DISCONNECTED);
+                }
+            }
+
+            /* Auto-pick: if we are still choosing the network to connect to, connect
+               to the strongest-signal saved network that is in range. Skip while an
+               attempt is already active so the 15s watchdog (not a 10s scan) drives
+               failure; the watchdog advances to the next best saved network. */
+            if (s_auto_pick && !s_attempt_active && s_cur_ip[0] == '\0') {
+                int best = pick_best_saved_excluding(NULL);
+                if (best >= 0) {
+                    const wifi_profile_t *pr = sf_config_get_wifi_profile(best);
+                    sf_wifi_connect_params_t cp = {
+                        .ssid     = pr->ssid,
+                        .security = (sf_wifi_security_t)pr->security,
+                        .pass     = pr->pass[0] ? pr->pass : NULL,
+                        .identity = pr->identity[0] ? pr->identity : NULL,
+                        .username = pr->username[0] ? pr->username : NULL,
+                    };
+                    start_connect(&cp, true);
                 }
             }
 
@@ -273,16 +381,62 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             s_ever_connected = true;
             set_state(SF_WIFI_STATE_CONNECTED);
             /* Persist credentials only after a successful connection */
-            sf_config_set_wifi_creds_ex(s_ssid, (int)s_target_security,
-                                        s_target_pass[0] ? s_target_pass : NULL,
-                                        s_target_identity[0] ? s_target_identity : NULL,
-                                        s_target_username[0] ? s_target_username : NULL);
+            s_attempt_active = false;
+            s_auto_pick = false;
+            sf_config_add_wifi_profile(s_ssid, (int)s_target_security,
+                                       s_target_pass[0] ? s_target_pass : NULL,
+                                       s_target_identity[0] ? s_target_identity : NULL,
+                                       s_target_username[0] ? s_target_username : NULL);
             sf_config_save();
         }
     }
 }
 
 /* ── Public API ─────────────────────────────────────── */
+
+/* Watchdog: a first-connect attempt that does not reach GOT_IP within the timeout
+   window is treated as failed. A manual attempt reverts to the previous network;
+   an auto attempt (boot/enable) advances to the next best saved network in range. */
+static void attempt_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_attempt_active) return;
+    if (s_state == SF_WIFI_STATE_CONNECTED) { s_attempt_active = false; return; }
+    if (esp_timer_get_time() < s_attempt_deadline) return;
+
+    ESP_LOGW(TAG, "connect attempt timed out ('%s')", s_ssid);
+    s_attempt_active = false;
+
+    if (s_auto_pick) {
+        int best = pick_best_saved_excluding(s_ssid);
+        if (best >= 0) {
+            const wifi_profile_t *pr = sf_config_get_wifi_profile(best);
+            sf_wifi_connect_params_t cp = {
+                .ssid     = pr->ssid,
+                .security = (sf_wifi_security_t)pr->security,
+                .pass     = pr->pass[0] ? pr->pass : NULL,
+                .identity = pr->identity[0] ? pr->identity : NULL,
+                .username = pr->username[0] ? pr->username : NULL,
+            };
+            start_connect(&cp, true);   /* re-arm the chain to the next best saved network */
+        } else {
+            s_auto_pick = false;
+            set_state(SF_WIFI_STATE_DISCONNECTED);
+        }
+    } else {
+        /* Manual attempt failed: revert to the network we were on (infinite retry). */
+        if (s_prev_ssid[0] && sf_config_has_wifi_profile(s_prev_ssid)) {
+            load_target_from_profile(s_prev_ssid);
+            apply_sta_config();
+            esp_wifi_disconnect();
+            esp_wifi_connect();
+            set_state(SF_WIFI_STATE_CONNECTING);
+        } else {
+            s_ssid[0] = '\0';
+            set_state(SF_WIFI_STATE_DISCONNECTED);
+        }
+    }
+}
 
 esp_err_t sf_wifi_init(void)
 {
@@ -319,6 +473,16 @@ esp_err_t sf_wifi_init(void)
     s_scan_mutex = xSemaphoreCreateMutex();
     if (!s_scan_mutex) return ESP_ERR_NO_MEM;
 
+    /* Periodic watchdog: forces a first-connect attempt to time out (see attempt_timer_cb) */
+    esp_timer_create_args_t targs = {
+        .callback = attempt_timer_cb,
+        .name = "wifi_attempt",
+    };
+    if (s_attempt_timer == NULL)
+        esp_timer_create(&targs, &s_attempt_timer);
+    if (s_attempt_timer)
+        esp_timer_start_periodic(s_attempt_timer, 1000000);
+
     /* Register event handlers */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL, NULL));
@@ -330,17 +494,13 @@ esp_err_t sf_wifi_init(void)
 
     s_inited = true;
 
-    /* Auto-connect if Wi-Fi is enabled and saved credentials exist */
-    if (sf_config_get_wifi_enabled() && sf_config_has_wifi_creds()) {
-        sf_wifi_connect_params_t p = {
-            .ssid     = sf_config_get_wifi_ssid(),
-            .security = (sf_wifi_security_t)sf_config_get_wifi_security(),
-            .pass     = sf_config_get_wifi_pass(),
-            .identity = sf_config_get_wifi_identity(),
-            .username = sf_config_get_wifi_username(),
-        };
-        ESP_LOGI(TAG, "auto-connecting to '%s'", p.ssid);
-        sf_wifi_connect_ex(&p);
+    /* Auto-connect if Wi-Fi is enabled and saved profiles exist: scan, then
+       connect to the strongest-signal saved network that is in range. */
+    if (sf_config_get_wifi_enabled() && sf_config_get_wifi_profile_count() > 0) {
+        s_auto_pick = true;
+        ESP_LOGI(TAG, "auto-picking best saved network...");
+        ESP_ERROR_CHECK(ensure_started());
+        sf_wifi_start_scan();
         return ESP_OK;
     }
 
@@ -358,8 +518,10 @@ esp_err_t sf_wifi_set_enabled(bool enabled)
         ESP_ERROR_CHECK(ensure_started());
         sf_config_set_wifi_enabled(true);
         sf_config_save();
-        /* s_ssid (the saved target) is already set; show it as connecting. */
-        if (s_ssid[0]) {
+        if (sf_config_get_wifi_profile_count() > 0) {
+            s_auto_pick = true;
+            sf_wifi_start_scan();
+        } else if (s_ssid[0]) {
             set_state(SF_WIFI_STATE_CONNECTING);
         } else {
             set_state(SF_WIFI_STATE_DISCONNECTED);
@@ -369,6 +531,8 @@ esp_err_t sf_wifi_set_enabled(bool enabled)
         esp_wifi_disconnect();
         esp_wifi_stop();
         s_enabled = false;
+        s_auto_pick = false;
+        s_attempt_active = false;
         sf_config_set_wifi_enabled(false);
         sf_config_save();
         s_scan_requested = false;
@@ -417,6 +581,16 @@ int8_t sf_wifi_get_rssi(void)
     return 0;
 }
 
+bool sf_wifi_is_connecting(void)
+{
+    return s_enabled && s_ssid[0] != '\0' && s_state != SF_WIFI_STATE_CONNECTED;
+}
+
+bool sf_wifi_is_attempt_active(void)
+{
+    return s_attempt_active;
+}
+
 esp_err_t sf_wifi_connect(const char *ssid, const char *pass)
 {
     sf_wifi_connect_params_t p = {
@@ -434,22 +608,28 @@ esp_err_t sf_wifi_connect_ex(const sf_wifi_connect_params_t *params)
     if (!s_inited || !params || !params->ssid || !params->ssid[0])
         return ESP_ERR_INVALID_ARG;
 
-    /* Remember the target network (drives reconnect). Persist only on success. */
-    store_target(params);
-    set_state(SF_WIFI_STATE_CONNECTING);
+    /* Manual connection attempt (no auto-advance to the next saved network). */
+    start_connect(params, false);
+    return ESP_OK;
+}
 
-    bool was_enabled = s_enabled;
+esp_err_t sf_wifi_connect_saved(const char *ssid)
+{
+    if (!s_inited || !ssid || !ssid[0])
+        return ESP_ERR_INVALID_ARG;
+    if (!sf_config_has_wifi_profile(ssid))
+        return ESP_ERR_NOT_FOUND;
 
-    /* Apply station config (SSID/pass/security/EAP) before bringing the radio up. */
-    apply_sta_config();
-
-    if (!was_enabled) {
-        ESP_ERROR_CHECK(ensure_started());   /* STA_START handler connects to s_ssid */
-    } else {
-        esp_wifi_connect();                  /* radio already up: connect / switch network */
-    }
-
-    ESP_LOGI(TAG, "connecting to '%s'...", params->ssid);
+    /* Load the stored credentials into the in-memory target, then connect. */
+    load_target_from_profile(ssid);
+    sf_wifi_connect_params_t p = {
+        .ssid     = s_ssid,
+        .security = s_target_security,
+        .pass     = s_target_pass[0] ? s_target_pass : NULL,
+        .identity = s_target_identity[0] ? s_target_identity : NULL,
+        .username = s_target_username[0] ? s_target_username : NULL,
+    };
+    start_connect(&p, false);
     return ESP_OK;
 }
 
@@ -464,15 +644,23 @@ esp_err_t sf_wifi_disconnect(void)
 esp_err_t sf_wifi_forget(void)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
+    ESP_LOGI(TAG, "forgot network '%s'", s_ssid);
     s_ever_connected = false;
-    sf_config_clear_wifi_creds();
+    s_attempt_active = false;
+    s_auto_pick = false;
+    sf_config_remove_wifi_profile(s_ssid);
     s_ssid[0] = '\0';
     s_target_pass[0] = '\0';
     s_target_identity[0] = '\0';
     s_target_username[0] = '\0';
-    ESP_LOGI(TAG, "forgot saved network");
     sf_config_save();
-    return sf_wifi_set_enabled(false);
+    if (sf_config_get_wifi_profile_count() > 0 && s_enabled) {
+        s_auto_pick = true;
+        sf_wifi_start_scan();
+    } else {
+        sf_wifi_set_enabled(false);
+    }
+    return ESP_OK;
 }
 
 esp_err_t sf_wifi_start_scan(void)
